@@ -1,0 +1,961 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Users, CalendarDays, CheckSquare, Settings, LogOut, 
+  Menu, X, Plus, Trash2, 
+  Download, Printer, CheckCheck, XCircle, Edit, ShieldAlert, Clock
+} from 'lucide-react';
+
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
+
+// =========================================================================
+// PEGA AQUÍ TUS CREDENCIALES DE FIREBASE (Reemplaza las comillas vacías)
+// =========================================================================
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+  apiKey: "AIzaSyC5QsKG_1cwQjPLM6Ug9p5nFvS2cCYmEB4",
+  authDomain: "asistencia-jardin.firebaseapp.com",
+  projectId: "asistencia-jardin",
+  storageBucket: "asistencia-jardin.firebasestorage.app",
+  messagingSenderId: "103153253927",
+  appId: "1:103153253927:web:ba51f2b54898ff83d9d802"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'jardin-app';
+
+const timeToMins = (timeStr) => {
+  if (!timeStr) return 0;
+  const [h, m] = timeStr.split(':').map(Number);
+  return (h * 60) + m;
+};
+
+const minsToTime = (mins) => {
+  if (mins <= 0) return "00:00";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+};
+
+const JORNADA_MINUTOS = 528;
+const HORA_INICIO_AM = "08:30";
+const HORA_INICIO_PM = "12:54";
+
+const getDaysOfMonth = (year, month) => {
+  const date = new Date(year, month - 1, 1);
+  const days = [];
+  while (date.getMonth() === month - 1) {
+    const dayOfWeek = date.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      days.push(new Date(date).toISOString().split('T')[0]);
+    }
+    date.setDate(date.getDate() + 1);
+  }
+  return days;
+};
+
+const FUNCIONARIAS_WORD_EXACTO = [
+  "JACQUELINE ARELLANO MAMANI", "SARAY BLACETT GUZMAN", "PAULA BORQUEZ BENITT",
+  "JACQUELINE BURGOS GONZALEZ", "NATALIA CARTAGENA OCHOA", "JOSELYN CORREA MAMANI",
+  "LIZETTE CRUZ BUTRON", "DOLLY FERNANDEZ MAMANI", "NICOLE FERRADA MARTINEZ",
+  "ERIKA FRANCINO FUENTES", "AMERICA GAETE FARFÁN", "PATRICIA GAVIÑO SANCHEZ",
+  "SOLANGE GONZALEZ ARANCIBIA", "JOHANA MANRIQUEZ JAIME", "CINDY MARQUEZ MUÑOZ",
+  "MIREYA MOLINA RAMIREZ", "PATRICIA PARODI FERNANDEZ", "BARBARA PEREZ MONARDES",
+  "IRIS RAMOS LAZARO", "FRANCHESCA ROCHA JULIO", "VERONICA ROJAS ZAVALA",
+  "YESENIA SALINAS BALTAZAR", "NICOLE SANTELICES CRUZ", "ALICIA SANTIS ZUÑIGA",
+  "GEORGINA TAPIA MUÑOZ", "EDGARDO VALDEBENITO ROMERO", "JAEL VARGAS FLORES",
+  "KATHERINE VEGA MATAMOROS", "YINA VERA DIAZ", "NATALY ZAGAL FLORES",
+  "LAURA ZERNA MAMANI", "ANITA BARRAZA BARRERA"
+];
+
+export default function App() {
+  const [authUser, setAuthUser] = useState(null);
+  const [loggedUser, setLoggedUser] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [funcionarias, setFuncionarias] = useState([]);
+  const [registros, setRegistros] = useState({});
+  const [tareas, setTareas] = useState([]);
+  const [currentView, setCurrentView] = useState('asistencia');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) { console.error(err); }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => setAuthUser(u));
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const refs = {
+      app_users: collection(db, 'artifacts', appId, 'public', 'data', 'app_users'),
+      funcionarias: collection(db, 'artifacts', appId, 'public', 'data', 'funcionarias'),
+      registros: collection(db, 'artifacts', appId, 'public', 'data', 'registros'),
+      tareas: collection(db, 'artifacts', appId, 'public', 'data', 'tareas')
+    };
+
+    const unsubUsuarios = onSnapshot(refs.app_users, (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      if (data.length === 0) {
+        const adminDefault = { username: 'admin', password: '123', role: 'admin' };
+        setDoc(doc(refs.app_users, 'admin-default'), adminDefault);
+        setUsers([{ id: 'admin-default', ...adminDefault }]);
+      } else { setUsers(data); }
+    });
+
+    const unsubFuncionarias = onSnapshot(refs.funcionarias, (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      if (data.length === 0) {
+        FUNCIONARIAS_WORD_EXACTO.forEach((nombre, idx) => {
+          setDoc(doc(refs.funcionarias, `func-${idx + 1}`), { nombre, orden: idx + 1 });
+        });
+      } else {
+        setFuncionarias(data.sort((a, b) => (a.orden || 0) - (b.orden || 0)));
+      }
+    });
+
+    const unsubRegistros = onSnapshot(refs.registros, (snap) => {
+      const recs = {};
+      snap.docs.forEach(d => { recs[d.id] = d.data(); });
+      setRegistros(recs);
+    });
+
+    const unsubTareas = onSnapshot(refs.tareas, (snap) => {
+      setTareas(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+
+    return () => { unsubUsuarios(); unsubFuncionarias(); unsubRegistros(); unsubTareas(); };
+  }, [authUser]);
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    const { username, password } = e.target.elements;
+    const user = users.find(u => u.username === username.value && u.password === password.value);
+    if (user) setLoggedUser(user); else alert("Usuario o contraseña incorrectos.");
+  };
+
+  if (!loggedUser) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-slate-50 to-blue-100 flex items-center justify-center p-4 font-sans">
+        <form onSubmit={handleLogin} className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm border border-slate-100 backdrop-blur-sm">
+          <div className="flex justify-center mb-6 text-indigo-600 bg-indigo-50 w-16 h-16 rounded-2xl items-center mx-auto shadow-inner"><Users size={32} /></div>
+          <h1 className="text-2xl font-black text-center text-slate-800 mb-1">Acceso al Sistema</h1>
+          <p className="text-center text-slate-400 mb-6 text-xs uppercase font-bold tracking-wider">Jardín Infantil Las Terrazas</p>
+          <div className="space-y-4">
+            <div><label className="block text-xs font-bold text-slate-600 uppercase mb-1">Usuario</label><input name="username" type="text" required className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-medium bg-slate-50/50" /></div>
+            <div><label className="block text-xs font-bold text-slate-600 uppercase mb-1">Contraseña</label><input name="password" type="password" required className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-medium bg-slate-50/50" /></div>
+            <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 transition shadow-lg shadow-indigo-200">Ingresar</button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex bg-slate-100 font-sans text-slate-800">
+      <aside className={`print:hidden bg-slate-900 text-slate-300 transition-all duration-300 ${sidebarOpen ? 'w-64' : 'w-20'} flex flex-col fixed h-full z-20 shadow-2xl`}>
+        <div className="p-4 flex items-center justify-between border-b border-slate-800 bg-slate-950">
+          {sidebarOpen && <span className="font-extrabold text-sm text-white tracking-wide uppercase">Panel de Control</span>}
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 hover:bg-slate-800 text-white rounded-xl transition"><Menu size={20} /></button>
+        </div>
+        <div className="p-4 border-b border-slate-800 bg-slate-900/50">
+          {sidebarOpen ? (
+            <div><p className="text-[10px] text-slate-500 uppercase font-extrabold tracking-wider">Usuario Conectado</p><p className="font-bold text-white truncate text-sm mt-0.5">{loggedUser.username} <span className="text-[10px] bg-indigo-600 px-2 py-0.5 rounded-md ml-1 text-white uppercase font-bold">{loggedUser.role}</span></p></div>
+          ) : (<Users size={22} className="mx-auto text-indigo-400" />)}
+        </div>
+        <nav className="flex-1 py-4 space-y-1.5 overflow-y-auto px-2">
+          <NavItem icon={<CalendarDays size={20} />} label="Asistencia Diaria" view="asistencia" current={currentView} set={setCurrentView} open={sidebarOpen} />
+          <NavItem icon={<FileSpreadsheet size={20} />} label="Reporte Mensual" view="resumen" current={currentView} set={setCurrentView} open={sidebarOpen} />
+          <NavItem icon={<Clock size={20} />} label="Consulta de Atrasos" view="consulta_atrasos" current={currentView} set={setCurrentView} open={sidebarOpen} />
+          <NavItem icon={<ShieldAlert size={20} />} label="Permisos y L/M" view="permisos" current={currentView} set={setCurrentView} open={sidebarOpen} />
+          <NavItem icon={<CheckSquare size={20} />} label="Mis Tareas" view="tareas" current={currentView} set={setCurrentView} open={sidebarOpen} />
+          <NavItem icon={<Users size={20} />} label="Personal / Func." view="funcionarias" current={currentView} set={setCurrentView} open={sidebarOpen} />
+          {loggedUser.role === 'admin' && (<NavItem icon={<Settings size={20} />} label="Perfiles y Accesos" view="usuarios" current={currentView} set={setCurrentView} open={sidebarOpen} />)}
+        </nav>
+        <div className="p-4 border-t border-slate-800 bg-slate-950/50">
+          <button onClick={() => setLoggedUser(null)} className="flex items-center space-x-3 text-red-400 hover:text-red-300 w-full p-2.5 rounded-xl hover:bg-slate-800/80 transition text-sm font-bold"><LogOut size={18} />{sidebarOpen && <span>Cerrar Sesión</span>}</button>
+        </div>
+      </aside>
+
+      <main className={`flex-1 transition-all duration-300 ${sidebarOpen ? 'ml-64' : 'ml-20'} print:ml-0 print:w-full p-8 print:p-0`}>
+        {currentView === 'asistencia' && <VistaAsistencia funcionarias={funcionarias} registros={registros} db={db} appId={appId} />}
+        {currentView === 'resumen' && <VistaResumen funcionarias={funcionarias} registros={registros} />}
+        {currentView === 'consulta_atrasos' && <VistaConsultaAtrasos funcionarias={funcionarias} registros={registros} />}
+        {currentView === 'permisos' && <VistaPermisosGlobal funcionarias={funcionarias} registros={registros} db={db} appId={appId} />}
+        {currentView === 'tareas' && <VistaTareas tareas={tareas} db={db} appId={appId} />}
+        {currentView === 'funcionarias' && <VistaFuncionarias funcionarias={funcionarias} db={db} appId={appId} />}
+        {currentView === 'usuarios' && <VistaUsuarios users={users} db={db} appId={appId} currentUser={loggedUser} />}
+      </main>
+    </div>
+  );
+}
+
+function NavItem({ icon, label, view, current, set, open }) {
+  const active = current === view;
+  return (
+    <button onClick={() => set(view)} className={`w-full flex items-center space-x-3 px-3.5 py-3 rounded-xl transition text-sm font-semibold ${active ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'} ${!open && 'justify-center'}`} title={!open ? label : ''}>
+      <span className={active ? 'text-white' : 'text-slate-400'}>{icon}</span>
+      {open && <span className="truncate">{label}</span>}
+    </button>
+  );
+}
+
+function VistaAsistencia({ funcionarias, registros, db, appId }) {
+  const [fecha, setFecha] = useState('2026-08-03');
+
+  const updateRecord = async (funcId, updates) => {
+    const recordId = `${fecha}_${funcId}`;
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'registros', recordId);
+    const current = registros[recordId] || { fecha, funcId, estado: null, atrasoMinutos: 0, horaLlegada: '', permisos: [], licencia: null };
+    await setDoc(docRef, { ...current, ...updates });
+  };
+
+  const marcarTodos = (estado) => {
+    if(!window.confirm(`¿Seguro que deseas marcar a todas las funcionarias como ${estado}?`)) return;
+    funcionarias.forEach(f => {
+      const rec = registros[`${fecha}_${f.id}`];
+      let minCubiertos = 0;
+      if (rec?.licencia?.tipo === 'Completa') minCubiertos += JORNADA_MINUTOS;
+      rec?.permisos?.forEach(p => { if (['Feriado Legal', 'Administrativo Día Completo'].includes(p.tipo)) minCubiertos += JORNADA_MINUTOS; });
+      if (minCubiertos < JORNADA_MINUTOS) {
+        updateRecord(f.id, { estado, atrasoMinutos: 0, horaLlegada: '' });
+      }
+    });
+  };
+
+  return (
+    <div className="space-y-6 max-w-5xl mx-auto">
+      <div className="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80">
+        <div>
+          <h2 className="text-2xl font-black text-slate-800">Registro Diario de Asistencia</h2>
+          <p className="text-sm text-slate-500 mt-0.5">Control diario de presencia, ausencias y atrasos.</p>
+        </div>
+        <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className="mt-4 md:mt-0 border-2 border-slate-200 p-2.5 rounded-xl text-slate-700 outline-none focus:border-indigo-500 font-bold bg-slate-50" />
+      </div>
+      <div className="flex space-x-3 bg-white p-4 rounded-2xl shadow-sm border border-slate-200/80">
+        <button onClick={() => marcarTodos('Presente')} className="flex items-center px-4 py-2.5 bg-emerald-50 text-emerald-700 rounded-xl hover:bg-emerald-100 font-bold text-sm transition border border-emerald-200/60"><CheckCheck size={18} className="mr-2"/> Marcar Todos Presentes</button>
+        <button onClick={() => marcarTodos('Ausente')} className="flex items-center px-4 py-2.5 bg-rose-50 text-rose-700 rounded-xl hover:bg-rose-100 font-bold text-sm transition border border-rose-200/60"><XCircle size={18} className="mr-2"/> Marcar Todos Ausentes</button>
+      </div>
+      <div className="space-y-4">
+        {funcionarias.map(f => (
+          <TarjetaFuncionaria key={f.id} fecha={fecha} funcionaria={f} registros={registros} updateRecord={updateRecord} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TarjetaFuncionaria({ fecha, funcionaria, registros, updateRecord }) {
+  const recordId = `${fecha}_${funcionaria.id}`;
+  const record = registros[recordId] || { estado: null, atrasoMinutos: 0, horaLlegada: '', permisos: [], licencia: null };
+  const handleUpdate = (updates) => updateRecord(funcionaria.id, updates);
+
+  let minCubiertos = 0;
+  let tieneFeriado = false;
+  let esperaAm = false;
+
+  if (record.licencia?.tipo === 'Completa') minCubiertos += JORNADA_MINUTOS;
+  if (record.licencia?.tipo === 'Media') {
+    minCubiertos += (JORNADA_MINUTOS / 2);
+    if (record.licencia?.jornada === 'AM') esperaAm = true;
+  }
+
+  record.permisos.forEach(p => {
+    if (p.tipo === 'Feriado Legal') { minCubiertos += JORNADA_MINUTOS; tieneFeriado = true; }
+    if (p.tipo === 'Administrativo Día Completo') minCubiertos += JORNADA_MINUTOS;
+    if (p.tipo === 'Administrativo Medio Día') {
+      minCubiertos += (JORNADA_MINUTOS / 2);
+      if (p.jornada === 'AM') esperaAm = true;
+    }
+    if (p.tipo === 'Descanso Complementario') { minCubiertos += (timeToMins(p.hasta) - timeToMins(p.desde)); }
+    if (['Capacitación', 'Docencia', 'Horas Extras'].includes(p.tipo)) { minCubiertos += (p.horas * 60) + Number(p.minutos); }
+  });
+
+  const requiereAsistencia = minCubiertos < JORNADA_MINUTOS && !tieneFeriado;
+
+  const handleAtrasoChange = (hora) => {
+    if (!hora) { handleUpdate({ horaLlegada: '', atrasoMinutos: 0 }); return; }
+    let baseMinutos = esperaAm ? timeToMins(HORA_INICIO_PM) : timeToMins(HORA_INICIO_AM);
+    let llegadaMinutos = timeToMins(hora);
+    let atraso = Math.max(0, llegadaMinutos - baseMinutos);
+    handleUpdate({ horaLlegada: hora, atrasoMinutos: atraso });
+  };
+
+  return (
+    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 hover:border-indigo-200 transition-all">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="font-extrabold text-base text-slate-800">{funcionaria.nombre}</h3>
+        <div className="space-x-2">
+          <MenuPermisos onAdd={(p) => handleUpdate({ permisos: [...record.permisos, p] })} />
+          <MenuLicencias onSet={(l) => handleUpdate({ licencia: l })} current={record.licencia} />
+        </div>
+      </div>
+
+      {(record.permisos.length > 0 || record.licencia) && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          {record.licencia && (
+            <span className="inline-flex items-center px-3 py-1 rounded-xl text-xs font-black bg-rose-50 text-rose-700 border border-rose-200">
+              L/M {record.licencia.tipo} {record.licencia.jornada ? `(${record.licencia.jornada})` : ''}
+              <button onClick={() => handleUpdate({ licencia: null })} className="ml-2 text-rose-400 hover:text-rose-700"><X size={14}/></button>
+            </span>
+          )}
+          {record.permisos.map((p, i) => (
+            <span key={i} className="inline-flex items-center px-3 py-1 rounded-xl text-xs font-black bg-indigo-50 text-indigo-700 border border-indigo-200">
+              {p.tipo} {p.jornada ? `(${p.jornada})` : ''} {p.desde ? `(${p.desde} a ${p.hasta})` : ''}
+              <button onClick={() => handleUpdate({ permisos: record.permisos.filter((_, idx) => idx !== i) })} className="ml-2 text-indigo-400 hover:text-indigo-700"><X size={14}/></button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {requiereAsistencia ? (
+        <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-200/60">
+          <div className="flex space-x-6">
+            <label className="flex items-center space-x-2 cursor-pointer"><input type="radio" checked={record.estado === 'Presente'} onChange={() => handleUpdate({ estado: 'Presente', atrasoMinutos: 0, horaLlegada: '' })} className="w-4 h-4 text-indigo-600" /><span className="text-slate-700 font-bold text-sm">Presente</span></label>
+            <label className="flex items-center space-x-2 cursor-pointer"><input type="radio" checked={record.estado === 'Ausente'} onChange={() => handleUpdate({ estado: 'Ausente', atrasoMinutos: 0, horaLlegada: '' })} className="w-4 h-4 text-rose-600" /><span className="text-slate-700 font-bold text-sm">Ausente</span></label>
+            <label className="flex items-center space-x-2 cursor-pointer"><input type="radio" checked={record.estado === 'Atraso'} onChange={() => handleUpdate({ estado: 'Atraso' })} className="w-4 h-4 text-amber-500" /><span className="text-slate-700 font-bold text-sm">Atraso</span></label>
+          </div>
+          {record.estado === 'Atraso' && (
+            <div className="mt-4 flex items-center space-x-4 bg-amber-50/80 p-3.5 rounded-xl border border-amber-200">
+              <div><label className="text-xs text-amber-800 font-black block mb-1">Hora Llegada</label><input type="time" value={record.horaLlegada} onChange={(e) => handleAtrasoChange(e.target.value)} className="p-2 border border-amber-300 rounded-lg font-mono bg-white font-bold" /></div>
+              <div className="pl-4 border-l border-amber-200"><label className="text-xs text-amber-800 font-black block mb-1">Minutos Atraso</label><span className="text-lg font-black text-amber-700">{record.atrasoMinutos} minutos</span></div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center text-sm text-emerald-700 font-bold p-3.5 bg-emerald-50 rounded-xl border border-emerald-200/80"><CheckCheck size={18} className="mr-2"/> Jornada cubierta en su totalidad.</div>
+      )}
+    </div>
+  );
+}
+
+function MenuPermisos({ onAdd }) {
+  const [open, setOpen] = useState(false);
+  const [tipo, setTipo] = useState('');
+  const [jornada, setJornada] = useState('AM');
+  const [desde, setDesde] = useState('12:54');
+  const [hasta, setHasta] = useState('17:18');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!tipo) return;
+    let permiso = { tipo };
+    if (tipo === 'Administrativo Medio Día') permiso.jornada = jornada;
+    if (tipo === 'Descanso Complementario') { permiso.desde = desde; permiso.hasta = hasta; }
+    onAdd(permiso);
+    setOpen(false); setTipo('');
+  };
+
+  return (
+    <div className="relative inline-block">
+      <button onClick={() => setOpen(!open)} className="px-3.5 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-black hover:bg-indigo-100 transition border border-indigo-200/60">+ Permiso</button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-72 bg-white border border-slate-200 rounded-2xl shadow-2xl z-10 p-5">
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <h4 className="font-extrabold text-sm text-slate-800 mb-2">Nuevo Permiso</h4>
+            <select value={tipo} onChange={(e) => setTipo(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl text-xs font-semibold bg-slate-50" required>
+              <option value="">Seleccione tipo...</option>
+              <option value="Feriado Legal">Feriado Legal (F/L)</option>
+              <option value="Administrativo Día Completo">Permiso Administrativo (P/A)</option>
+              <option value="Administrativo Medio Día">Media Permiso Admin (1/2 P/A)</option>
+              <option value="Descanso Complementario">Tiempo Compensatorio (T/C)</option>
+              <option value="Capacitación">Jornada Capacitación (J/C)</option>
+              <option value="Docencia">Horas de Docencia (H/D)</option>
+            </select>
+            {tipo === 'Administrativo Medio Día' && (
+              <select value={jornada} onChange={(e) => setJornada(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl text-xs font-semibold">
+                <option value="AM">AM</option>
+                <option value="PM">PM</option>
+              </select>
+            )}
+            <div className="flex justify-end space-x-2 pt-2">
+              <button type="button" onClick={() => setOpen(false)} className="px-3 py-1.5 text-xs font-bold text-slate-500">Cancelar</button>
+              <button type="submit" className="px-4 py-1.5 text-xs font-black bg-indigo-600 text-white rounded-xl shadow-md shadow-indigo-200">Agregar</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuLicencias({ onSet }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative inline-block">
+      <button onClick={() => setOpen(!open)} className="px-3.5 py-2 bg-rose-50 text-rose-700 rounded-xl text-xs font-black hover:bg-rose-100 transition border border-rose-200/60">+ L. Médica</button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-56 bg-white border border-slate-200 rounded-2xl shadow-2xl z-10 p-2">
+          <button onClick={() => { onSet({ tipo: 'Completa' }); setOpen(false); }} className="block w-full text-left px-4 py-2.5 text-xs font-bold hover:bg-slate-50 rounded-xl text-slate-700">Jornada Completa (L/M)</button>
+          <button onClick={() => { onSet({ tipo: 'Media', jornada: 'AM' }); setOpen(false); }} className="block w-full text-left px-4 py-2.5 text-xs font-bold hover:bg-slate-50 rounded-xl text-slate-700">Media Jornada AM (1/2 L/M)</button>
+          <button onClick={() => { onSet({ tipo: 'Media', jornada: 'PM' }); setOpen(false); }} className="block w-full text-left px-4 py-2.5 text-xs font-bold hover:bg-slate-50 rounded-xl text-slate-700">Media Jornada PM (1/2 L/M)</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VistaConsultaAtrasos({ funcionarias, registros }) {
+  const [selectedFuncId, setSelectedFuncId] = useState(funcionarias[0]?.id || '');
+  const [mesConsulta, setMesConsulta] = useState('2026-08');
+
+  const funcionariaObj = funcionarias.find(f => f.id === selectedFuncId);
+
+  const atrasosDelMes = Object.keys(registros)
+    .filter(key => key.endsWith(`_${selectedFuncId}`) && key.startsWith(mesConsulta))
+    .map(key => ({ fecha: key.split('_')[0], ...registros[key] }))
+    .filter(r => r.estado === 'Atraso' || (r.estado === 'Ausente' && r.licencia?.tipo === 'Media'))
+    .sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+  let totalMinutosMes = 0;
+  atrasosDelMes.forEach(a => {
+    if (a.estado === 'Atraso') totalMinutosMes += a.atrasoMinutos;
+    if (a.estado === 'Ausente' && a.licencia?.tipo === 'Media') totalMinutosMes += 264;
+  });
+
+  return (
+    <div className="space-y-6 max-w-4xl mx-auto">
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80">
+        <h2 className="text-2xl font-black text-slate-800 mb-1">Consulta de Atrasos</h2>
+        <p className="text-sm text-slate-500 mb-6">Revisa el detalle y total acumulado de atrasos por funcionaria y periodo.</p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
+          <div>
+            <label className="block text-xs font-black text-slate-600 uppercase mb-1.5">Funcionaria</label>
+            <select value={selectedFuncId} onChange={e => setSelectedFuncId(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl bg-white font-extrabold text-slate-800">
+              {funcionarias.map(f => (
+                <option key={f.id} value={f.id}>{f.nombre}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-black text-slate-600 uppercase mb-1.5">Mes y Año</label>
+            <input type="month" value={mesConsulta} onChange={e => setMesConsulta(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl bg-white font-bold" />
+          </div>
+        </div>
+
+        <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white p-6 rounded-2xl shadow-lg shadow-orange-500/10 mb-6 flex justify-between items-center">
+          <div>
+            <h3 className="font-black text-base">Total Acumulado de Atrasos</h3>
+            <p className="text-xs text-amber-100 font-semibold mt-0.5">{funcionariaObj?.nombre} — Periodo: {mesConsulta}</p>
+          </div>
+          <div className="text-right">
+            <span className="text-3xl font-black">{minsToTime(totalMinutosMes)}</span>
+            <span className="text-xs block text-amber-100 font-bold uppercase tracking-wider">({totalMinutosMes} minutos)</span>
+          </div>
+        </div>
+
+        <div className="border border-slate-200/80 rounded-2xl overflow-hidden bg-white shadow-sm">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 text-slate-600 text-xs uppercase font-black border-b border-slate-200">
+                <th className="p-4">Fecha</th>
+                <th className="p-4">Descripción del Registro</th>
+                <th className="p-4 text-right">Minutos</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-sm font-mono">
+              {atrasosDelMes.map((a, i) => {
+                const mins = a.estado === 'Ausente' && a.licencia?.tipo === 'Media' ? 264 : a.atrasoMinutos;
+                const desc = a.estado === 'Ausente' && a.licencia?.tipo === 'Media' ? 'Ausencia con Media Licencia (264m)' : `Hora llegada: ${a.horaLlegada || 'Registrado'}`;
+                return (
+                  <tr key={i} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="p-4 font-black text-slate-800">{a.fecha}</td>
+                    <td className="p-4 text-slate-600 text-xs font-sans font-medium">{desc}</td>
+                    <td className="p-4 text-right font-black text-amber-600">{mins} min</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {atrasosDelMes.length === 0 && (
+            <p className="text-sm text-slate-400 text-center py-12 font-medium">No se registran atrasos para esta funcionaria en el periodo seleccionado.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VistaPermisosGlobal({ funcionarias, registros, db, appId }) {
+  const [selectedFuncId, setSelectedFuncId] = useState(funcionarias[0]?.id || '');
+  const [fechaPermiso, setFechaPermiso] = useState('2026-08-03');
+  const [tipoPermiso, setTipoPermiso] = useState('Feriado Legal');
+  const [jornadaMedio, setJornadaMedio] = useState('AM');
+  const [tipoLicencia, setTipoLicencia] = useState('Completa');
+  const [minutosAtrasoExtra, setMinutosAtrasoExtra] = useState(15);
+
+  const recordId = `${fechaPermiso}_${selectedFuncId}`;
+  const currentRecord = registros[recordId] || { fecha: fechaPermiso, funcId: selectedFuncId, estado: null, atrasoMinutos: 0, permisos: [], licencia: null };
+
+  const handleAgregarPermiso = async (e) => {
+    e.preventDefault();
+    if (!selectedFuncId) return;
+    const nuevoPermiso = { tipo: tipoPermiso, jornada: jornadaMedio };
+    const nuevosPermisos = [...(currentRecord.permisos || []), nuevoPermiso];
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registros', recordId), { ...currentRecord, permisos: nuevosPermisos }, { merge: true });
+    alert("Permiso agregado con éxito.");
+  };
+
+  const handleAgregarLicencia = async (e) => {
+    e.preventDefault();
+    if (!selectedFuncId) return;
+    const nuevaLicencia = { tipo: tipoLicencia, jornada: jornadaMedio };
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registros', recordId), { ...currentRecord, licencia: nuevaLicencia }, { merge: true });
+    alert("Licencia médica agregada con éxito.");
+  };
+
+  const handleRegistrarAtraso = async (e) => {
+    e.preventDefault();
+    if (!selectedFuncId) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registros', recordId), { ...currentRecord, estado: 'Atraso', atrasoMinutos: Number(minutosAtrasoExtra) }, { merge: true });
+    alert("Atraso registrado con éxito.");
+  };
+
+  const funcionariaActualObj = funcionarias.find(f => f.id === selectedFuncId);
+
+  const historicoFunc = Object.keys(registros)
+    .filter(key => key.endsWith(`_${selectedFuncId}`))
+    .map(key => ({ fecha: key.split('_')[0], ...registros[key] }))
+    .filter(r => (r.permisos?.length > 0 || r.licencia || r.estado === 'Atraso' || r.estado === 'Ausente'))
+    .sort((a, b) => b.fecha.localeCompare(a.fecha));
+
+  return (
+    <div className="space-y-6 max-w-5xl mx-auto">
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80">
+        <h2 className="text-2xl font-black text-slate-800 mb-1">Gestión e Histórico: Permisos y L/M</h2>
+        <p className="text-sm text-slate-500 mb-6">Administra o consulta el historial completo por funcionaria.</p>
+
+        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60 mb-6">
+          <label className="block text-xs font-black text-slate-600 uppercase mb-1.5">Seleccionar Funcionaria</label>
+          <select value={selectedFuncId} onChange={e => setSelectedFuncId(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl bg-white font-extrabold text-slate-800">
+            {funcionarias.map(f => (
+              <option key={f.id} value={f.id}>{f.nombre}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="border border-slate-200/80 p-6 rounded-2xl mb-8 bg-slate-50/50">
+          <h3 className="font-extrabold text-base text-slate-800 mb-4">Agregar o Modificar Registro</h3>
+          <div className="mb-4">
+            <label className="block text-xs font-black text-slate-600 uppercase mb-1.5">Fecha</label>
+            <input type="date" value={fechaPermiso} onChange={e => setFechaPermiso(e.target.value)} className="p-2.5 border border-slate-200 rounded-xl bg-white font-bold" />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <form onSubmit={handleAgregarPermiso} className="border border-indigo-100 p-4 rounded-2xl bg-white space-y-3 shadow-sm">
+              <h4 className="font-black text-indigo-900 text-xs uppercase tracking-wider">Permiso</h4>
+              <select value={tipoPermiso} onChange={e => setTipoPermiso(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl text-xs font-semibold bg-slate-50">
+                <option value="Feriado Legal">Feriado Legal (F/L)</option>
+                <option value="Administrativo Día Completo">Permiso Admin (P/A)</option>
+                <option value="Administrativo Medio Día">Media Permiso Admin (1/2 P/A)</option>
+                <option value="Descanso Complementario">Tiempo Comp. (T/C)</option>
+                <option value="Capacitación">Capacitación (J/C)</option>
+                <option value="Docencia">Docencia (H/D)</option>
+              </select>
+              {tipoPermiso === 'Administrativo Medio Día' && (
+                <select value={jornadaMedio} onChange={e => setJornadaMedio(e.target.value)} className="w-full p-2 border rounded-xl text-xs font-semibold">
+                  <option value="AM">AM</option><option value="PM">PM</option>
+                </select>
+              )}
+              <button type="submit" className="w-full bg-indigo-600 text-white py-2 rounded-xl font-black text-xs hover:bg-indigo-700 shadow-md shadow-indigo-100">Agregar Permiso</button>
+            </form>
+
+            <form onSubmit={handleAgregarLicencia} className="border border-rose-100 p-4 rounded-2xl bg-white space-y-3 shadow-sm">
+              <h4 className="font-black text-rose-900 text-xs uppercase tracking-wider">Licencia Médica</h4>
+              <select value={tipoLicencia} onChange={e => setTipoLicencia(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl text-xs font-semibold bg-slate-50">
+                <option value="Completa">Completa (L/M)</option>
+                <option value="Media">Media Jornada (1/2 L/M)</option>
+              </select>
+              {tipoLicencia === 'Media' && (
+                <select value={jornadaMedio} onChange={e => setJornadaMedio(e.target.value)} className="w-full p-2 border rounded-xl text-xs font-semibold">
+                  <option value="AM">AM</option><option value="PM">PM</option>
+                </select>
+              )}
+              <button type="submit" className="w-full bg-rose-600 text-white py-2 rounded-xl font-black text-xs hover:bg-rose-700 shadow-md shadow-rose-100">Agregar Licencia</button>
+            </form>
+
+            <form onSubmit={handleRegistrarAtraso} className="border border-amber-100 p-4 rounded-2xl bg-white space-y-3 shadow-sm">
+              <h4 className="font-black text-amber-900 text-xs uppercase tracking-wider">Atraso</h4>
+              <div>
+                <label className="text-xs font-bold text-slate-600 block mb-1">Minutos de atraso:</label>
+                <input type="number" min="1" value={minutosAtrasoExtra} onChange={e => setMinutosAtrasoExtra(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl text-xs font-bold" />
+              </div>
+              <button type="submit" className="w-full bg-amber-500 text-white py-2 rounded-xl font-black text-xs hover:bg-amber-600 shadow-md shadow-amber-100 mt-2">Registrar Atraso</button>
+            </form>
+          </div>
+        </div>
+
+        <div className="border-t border-slate-200/80 pt-6">
+          <h3 className="font-black text-slate-800 text-lg mb-4">
+            Histórico Completo de: <span className="text-indigo-600">{funcionariaActualObj?.nombre}</span>
+          </h3>
+
+          <div className="space-y-3">
+            {historicoFunc.map((h, i) => (
+              <div key={i} className="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-slate-50/80 border border-slate-200/60 rounded-2xl gap-3">
+                <div className="space-y-1">
+                  <span className="font-mono text-xs font-black bg-slate-200/80 px-2.5 py-1 rounded-lg text-slate-700">📅 {h.fecha}</span>
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {h.licencia && (
+                      <span className="px-3 py-1 bg-rose-50 text-rose-700 font-black rounded-xl text-xs border border-rose-200">
+                        L/M: {h.licencia.tipo} {h.licencia.jornada ? `(${h.licencia.jornada})` : ''}
+                      </span>
+                    )}
+                    {h.permisos?.map((p, pIdx) => (
+                      <span key={pIdx} className="px-3 py-1 bg-indigo-50 text-indigo-700 font-black rounded-xl text-xs border border-indigo-200">
+                        Permiso: {p.tipo} {p.jornada ? `(${p.jornada})` : ''}
+                      </span>
+                    ))}
+                    {h.estado === 'Atraso' && (
+                      <span className="px-3 py-1 bg-amber-50 text-amber-700 font-black rounded-xl text-xs border border-amber-200">
+                        Atraso: {h.atrasoMinutos} minutos
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex space-x-2">
+                  {h.licencia && (
+                    <button onClick={async () => {
+                      const rId = `${h.fecha}_${selectedFuncId}`;
+                      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registros', rId), { ...registros[rId], licencia: null }, { merge: true });
+                    }} className="text-xs text-rose-600 bg-white border border-rose-300 px-3 py-1.5 rounded-xl font-bold hover:bg-rose-50 shadow-sm">Eliminar L/M</button>
+                  )}
+                  {h.estado === 'Atraso' && (
+                    <button onClick={async () => {
+                      const rId = `${h.fecha}_${selectedFuncId}`;
+                      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registros', rId), { ...registros[rId], estado: null, atrasoMinutos: 0 }, { merge: true });
+                    }} className="text-xs text-amber-600 bg-white border border-amber-300 px-3 py-1.5 rounded-xl font-bold hover:bg-amber-50 shadow-sm">Eliminar Atraso</button>
+                  )}
+                </div>
+              </div>
+            ))}
+            {historicoFunc.length === 0 && (
+              <p className="text-sm text-slate-400 text-center py-12 font-medium">No hay registros históricos de permisos, licencias o atrasos para esta funcionaria.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VistaResumen({ funcionarias, registros }) {
+  const [mes, setMes] = useState('2026-08'); 
+  const year = parseInt(mes.split('-')[0]);
+  const month = parseInt(mes.split('-')[1]);
+  const daysOfMonth = getDaysOfMonth(year, month);
+  const nombreMesAnio = new Date(year, month - 1, 1).toLocaleString('es-ES', { month: 'long', year: 'numeric' }).toUpperCase();
+
+  const handlePrint = () => window.print();
+
+  const exportToWord = () => {
+    const content = document.getElementById("report-document").outerHTML;
+    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Reporte Asistencia</title><style>table { border-collapse: collapse; width: 100%; font-size: 8pt; font-family: Arial;} th, td { border: 1px solid black; padding: 2px; text-align: center; } .name { text-align: left; padding-left: 5px; }</style></head><body>";
+    const blob = new Blob(['\ufeff', header + content + "</body></html>"], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Asistencia_${mes}.doc`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const grupo1 = funcionarias.slice(0, 16);
+  const grupo2 = funcionarias.slice(16, 32);
+
+  const renderTabla = (lista, inicioNum) => (
+    <div className="mb-6">
+      <div className="text-center font-black text-sm mb-3 uppercase tracking-wide">
+        REGISTRO DE ASISTENCIA Y CONTROL - {nombreMesAnio}
+      </div>
+      <table className="w-full border-collapse text-[10px] print:text-[8px] bg-white font-mono shadow-sm">
+        <thead>
+          <tr className="bg-slate-100 print:bg-white font-black text-slate-800">
+            <th className="border border-black p-1 w-8 text-center">Nº</th>
+            <th className="border border-black p-1 text-left w-56 font-sans">NOMBRE FUNCIONARIO</th>
+            {daysOfMonth.map(d => (
+              <th key={d} className="border border-black p-1 w-7 text-center">{d.slice(8, 10)}</th>
+            ))}
+            <th className="border border-black p-1 text-center w-24 font-sans">TOTAL</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lista.map((f, idx) => {
+            let totalAtrasosMins = 0;
+            let totalLicenciaMedicaDias = 0;
+            let contadoresPermisos = { FL: 0, PA: 0, MedioPA: 0, TC: 0, JC: 0, HD: 0 };
+            const numeroReal = inicioNum + idx;
+
+            daysOfMonth.forEach(d => {
+              const rec = registros[`${d}_${f.id}`];
+              if (rec) {
+                if (rec.licencia?.tipo === 'Completa') totalLicenciaMedicaDias += 1;
+                else if (rec.licencia?.tipo === 'Media') totalLicenciaMedicaDias += 0.5;
+
+                rec.permisos.forEach(p => {
+                  if (p.tipo === 'Feriado Legal') contadoresPermisos.FL++;
+                  if (p.tipo === 'Administrativo Día Completo') contadoresPermisos.PA++;
+                  if (p.tipo === 'Administrativo Medio Día') contadoresPermisos.MedioPA++;
+                  if (p.tipo === 'Descanso Complementario') contadoresPermisos.TC++;
+                  if (p.tipo === 'Capacitación') contadoresPermisos.JC++;
+                  if (p.tipo === 'Docencia') contadoresPermisos.HD++;
+                });
+
+                if (rec.estado === 'Atraso') {
+                  totalAtrasosMins += rec.atrasoMinutos;
+                }
+                if (rec.estado === 'Ausente' && rec.licencia?.tipo === 'Media') {
+                  totalAtrasosMins += 264;
+                }
+              }
+            });
+
+            return (
+              <tr key={f.id} className="hover:bg-slate-50">
+                <td className="border border-black p-1 text-center font-bold">{numeroReal}</td>
+                <td className="border border-black p-1 font-bold name pl-2 uppercase font-sans text-xs">{f.nombre}</td>
+                {daysOfMonth.map(d => {
+                  const rec = registros[`${d}_${f.id}`];
+                  let celdaStr = "";
+                  if (rec) {
+                    if (rec.licencia?.tipo === 'Completa') celdaStr = "L/M";
+                    else if (rec.licencia?.tipo === 'Media') celdaStr = "1/2 L/M";
+
+                    if (!celdaStr || celdaStr.includes("1/2")) {
+                      rec.permisos.forEach(p => {
+                        if (p.tipo === 'Feriado Legal') celdaStr = "F/L";
+                        if (p.tipo === 'Administrativo Día Completo') celdaStr = "P/A";
+                        if (p.tipo === 'Administrativo Medio Día') celdaStr = "1/2 P/A";
+                        if (p.tipo === 'Descanso Complementario') celdaStr = "T/C";
+                        if (p.tipo === 'Capacitación') celdaStr = "J/C";
+                        if (p.tipo === 'Docencia') celdaStr = "H/D";
+                      });
+                    }
+
+                    if (!celdaStr || celdaStr.includes("1/2")) {
+                      if (rec.estado === 'Presente') celdaStr = celdaStr ? `${celdaStr} .` : ".";
+                      else if (rec.estado === 'Ausente') celdaStr = celdaStr ? `${celdaStr} /` : "/";
+                      else if (rec.estado === 'Atraso') celdaStr = celdaStr ? `${celdaStr} '` : "'";
+                    }
+                  }
+                  return <td key={d} className="border border-black p-1 text-center font-bold">{celdaStr}</td>;
+                })}
+                <td className="border border-black p-1 text-center font-bold text-[8px] font-sans leading-tight">
+                  {totalLicenciaMedicaDias > 0 && <span className="text-red-700 block">L/M: {totalLicenciaMedicaDias}d</span>}
+                  {totalAtrasosMins > 0 && <span className="text-orange-700 block">Atr: {minsToTime(totalAtrasosMins)}</span>}
+                  {contadoresPermisos.FL > 0 && <span className="block">F/L: {contadoresPermisos.FL}</span>}
+                  {contadoresPermisos.PA > 0 && <span className="block">P/A: {contadoresPermisos.PA}</span>}
+                  {contadoresPermisos.MedioPA > 0 && <span className="block">1/2 P/A: {contadoresPermisos.MedioPA}</span>}
+                  {contadoresPermisos.TC > 0 && <span className="block">T/C: {contadoresPermisos.TC}</span>}
+                  {contadoresPermisos.JC > 0 && <span className="block">J/C: {contadoresPermisos.JC}</span>}
+                  {contadoresPermisos.HD > 0 && <span className="block">H/D: {contadoresPermisos.HD}</span>}
+                  {totalLicenciaMedicaDias === 0 && totalAtrasosMins === 0 && Object.values(contadoresPermisos).every(v => v === 0) && <span className="text-slate-400">-</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6 max-w-7xl mx-auto">
+      <div className="print:hidden flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80">
+        <div>
+          <h2 className="text-2xl font-black text-slate-800">Reporte Mensual Oficial</h2>
+          <p className="text-sm text-slate-500 mt-0.5">Diseño oficial idéntico al documento institucional.</p>
+        </div>
+        <div className="flex items-center space-x-3">
+          <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} className="border-2 border-slate-200 p-2.5 rounded-xl text-slate-700 outline-none font-bold bg-slate-50" />
+          <button onClick={handlePrint} className="bg-slate-800 text-white p-3 rounded-xl hover:bg-slate-700 flex items-center shadow-md transition" title="Imprimir / PDF"><Printer size={20} /></button>
+          <button onClick={exportToWord} className="bg-indigo-600 text-white p-3 rounded-xl hover:bg-indigo-700 flex items-center shadow-md shadow-indigo-200 transition" title="Descargar Word"><Download size={20} /></button>
+        </div>
+      </div>
+
+      <div id="report-document" className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200/80 print:shadow-none print:border-none print:p-0">
+        {renderTabla(grupo1, 1)}
+        {grupo2.length > 0 && renderTabla(grupo2, 17)}
+
+        <div className="mt-8 text-[10px] print:text-[8px] border-t border-black pt-3">
+          <table className="w-full border-none font-sans">
+            <tbody>
+              <tr>
+                <td className="border-none p-1"><b>Asistencia:</b> .</td>
+                <td className="border-none p-1"><b>Paro:</b> P</td>
+                <td className="border-none p-1"><b>Suspensión:</b> S</td>
+                <td className="border-none p-1"><b>Comisión de servicio:</b> C/S</td>
+              </tr>
+              <tr>
+                <td className="border-none p-1"><b>Inasistencia:</b> /</td>
+                <td className="border-none p-1"><b>Tiempo compensatorio:</b> T/C</td>
+                <td className="border-none p-1"><b>Traslado:</b> T</td>
+                <td className="border-none p-1"><b>Feriado Legal:</b> F/L</td>
+              </tr>
+              <tr>
+                <td className="border-none p-1"><b>Permiso Administrativo:</b> P/A</td>
+                <td className="border-none p-1"><b>Atrasos min.:</b> ‘</td>
+                <td className="border-none p-1"><b>Jornada Capacitación:</b> J/C</td>
+                <td className="border-none p-1"><b>Receso invernal:</b> R/I</td>
+              </tr>
+              <tr>
+                <td className="border-none p-1"><b>Licencia Médica:</b> L/M</td>
+                <td className="border-none p-1"><b>Fuero Gremial:</b> F/G</td>
+                <td className="border-none p-1"><b>Permiso sin goce Remuneración:</b> P.S.G.</td>
+                <td className="border-none p-1"><b>Horas de Docencia:</b> H/D</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div className="mt-12 text-center font-black font-sans">
+            <p>PAULA BORQUEZ BENITT</p>
+            <p className="font-bold text-slate-600">ENCARGADA DE JARDIN</p>
+            <p className="font-bold text-slate-600">JARDIN INFANTIL Y SALA CUNA LAS TERRAZAS</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VistaFuncionarias({ funcionarias, db, appId }) {
+  const [nombre, setNombre] = useState('');
+  const [editId, setEditId] = useState(null);
+  const save = async (e) => {
+    e.preventDefault();
+    if (!nombre.trim()) return;
+    if (editId) {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'funcionarias', editId), { nombre }, { merge: true });
+      setEditId(null);
+    } else {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'funcionarias', Date.now().toString()), { nombre, orden: funcionarias.length + 1 });
+    }
+    setNombre('');
+  };
+  const remove = async (id) => { if(window.confirm("¿Eliminar?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'funcionarias', id)); };
+
+  return (
+    <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-sm p-8 border border-slate-200/80">
+      <h2 className="text-2xl font-black text-slate-800 mb-1">Gestión de Personal</h2>
+      <p className="text-sm text-slate-500 mb-6">Agrega, modifica o elimina funcionarias del jardín.</p>
+      <form onSubmit={save} className="flex space-x-3 mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
+        <input type="text" value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Nombre completo..." className="flex-1 border border-slate-200 p-3 rounded-xl outline-none font-bold bg-white" />
+        <button type="submit" className="bg-slate-900 text-white px-6 py-3 rounded-xl font-black flex items-center hover:bg-slate-800 transition"><Users size={18} className="mr-2"/> {editId ? 'Guardar' : 'Agregar'}</button>
+      </form>
+      <ul className="divide-y divide-slate-100 border border-slate-200/80 rounded-2xl overflow-hidden bg-white">
+        {funcionarias.map(f => (
+          <li key={f.id} className="p-4 flex justify-between items-center hover:bg-slate-50/80 transition-colors">
+            <span className="font-black text-slate-700 text-sm">{f.nombre}</span>
+            <div className="flex space-x-2">
+              <button onClick={() => { setEditId(f.id); setNombre(f.nombre); }} className="p-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition"><Edit size={16}/></button>
+              <button onClick={() => remove(f.id)} className="p-2 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition"><Trash2 size={16}/></button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function VistaUsuarios({ users, db, appId, currentUser }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('user');
+  const [editId, setEditId] = useState(null);
+
+  const saveUser = async (e) => {
+    e.preventDefault();
+    if (!username.trim() || !password.trim()) return;
+    if (editId) {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_users', editId), { username, password, role }, { merge: true });
+      setEditId(null);
+    } else {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_users', Date.now().toString()), { username, password, role });
+    }
+    setUsername(''); setPassword(''); setRole('user');
+  };
+
+  const removeUser = async (id) => { if(window.confirm("¿Eliminar usuario?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_users', id)); };
+
+  return (
+    <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-sm p-8 border border-slate-200/80">
+      <h2 className="text-2xl font-black text-slate-800 mb-1">Gestión de Perfiles y Accesos</h2>
+      <p className="text-sm text-slate-500 mb-6">Crea cuentas de acceso y asigna privilegios de administrador o normal.</p>
+      <form onSubmit={saveUser} className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 mb-6 space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <input type="text" value={username} onChange={e => setUsername(e.target.value)} placeholder="Usuario" className="border border-slate-200 p-3 rounded-xl outline-none bg-white font-bold text-sm" required />
+          <input type="text" value={password} onChange={e => setPassword(e.target.value)} placeholder="Contraseña" className="border border-slate-200 p-3 rounded-xl outline-none bg-white font-bold text-sm" required />
+          <select value={role} onChange={e => setRole(e.target.value)} className="border border-slate-200 p-3 rounded-xl outline-none font-black bg-white text-slate-700 text-sm">
+            <option value="user">Privilegios: Normal</option>
+            <option value="admin">Privilegios: Administrador</option>
+          </select>
+        </div>
+        <div className="flex justify-end">
+          <button type="submit" className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-black text-sm flex items-center hover:bg-indigo-700 shadow-md shadow-indigo-200"><Plus size={18} className="mr-1.5"/> {editId ? 'Guardar Cambios' : 'Agregar Perfil'}</button>
+        </div>
+      </form>
+      <div className="border border-slate-200/80 rounded-2xl overflow-hidden bg-white shadow-sm">
+        <ul className="divide-y divide-slate-100">
+          {users.map(u => (
+            <li key={u.id} className="p-4 flex justify-between items-center hover:bg-slate-50/80 transition-colors">
+              <div>
+                <span className="font-black text-slate-800 text-base">{u.username}</span>
+                <span className={`text-[10px] uppercase px-2.5 py-0.5 rounded-full font-black ml-3 ${u.role === 'admin' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>{u.role === 'admin' ? 'Administrador' : 'Normal'}</span>
+              </div>
+              <div className="flex space-x-2">
+                <button onClick={() => { setEditId(u.id); setUsername(u.username); setPassword(u.password); setRole(u.role); }} className="p-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition"><Edit size={16}/></button>
+                {u.id !== currentUser.id && <button onClick={() => removeUser(u.id)} className="p-2 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition"><Trash2 size={16}/></button>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function VistaTareas({ tareas, db, appId }) {
+  const [nueva, setNueva] = useState('');
+  const add = async (e) => {
+    e.preventDefault();
+    if (!nueva.trim()) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tareas', Date.now().toString()), { txt: nueva, done: false });
+    setNueva('');
+  };
+  const toggle = async (t) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tareas', t.id), { done: !t.done }, { merge: true });
+  const del = async (id) => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tareas', id));
+
+  return (
+    <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-sm p-8 border border-slate-200/80">
+      <h2 className="text-2xl font-black text-slate-800 mb-1">Mis Tareas y Pendientes</h2>
+      <p className="text-sm text-slate-500 mb-6">Organiza tus trabajos y pendientes diarios.</p>
+      <form onSubmit={add} className="flex space-x-3 mb-6">
+        <input type="text" value={nueva} onChange={e => setNueva(e.target.value)} placeholder="Nuevo trabajo o pendiente..." className="flex-1 border border-slate-200 p-3.5 rounded-xl outline-none font-bold text-sm bg-slate-50/50" />
+        <button type="submit" className="bg-indigo-600 text-white px-6 rounded-xl font-black text-sm shadow-md shadow-indigo-200 hover:bg-indigo-700 transition">Agregar</button>
+      </form>
+      <div className="space-y-3">
+        {tareas.map(t => (
+          <div key={t.id} className={`flex items-center justify-between p-4 border rounded-2xl transition ${t.done ? 'bg-slate-50 border-slate-200/60' : 'bg-white border-slate-200 shadow-sm'}`}>
+            <label className="flex items-center space-x-4 cursor-pointer flex-1">
+              <input type="checkbox" checked={t.done} onChange={() => toggle(t)} className="w-5 h-5 text-indigo-600 rounded-lg accent-indigo-600" />
+              <span className={`text-base font-bold ${t.done ? 'line-through text-slate-400' : 'text-slate-800'}`}>{t.txt}</span>
+            </label>
+            <button onClick={() => del(t.id)} className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition"><Trash2 size={20}/></button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
